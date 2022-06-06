@@ -152,7 +152,7 @@ namespace Script_Industrial_Auto_Write_Off
             decTotal = lstAccount.Select(x => x.Amount).Sum();
             strTotal = Convert.ToInt32((Math.Abs(decTotal) * 100)).ToString();
 
-            //enter summary data
+            //enter summary data 
             ss.WaitForString("TYPE BATCH CONTROL INFORMATION");
             ss.SendText(DateTime.Now.ToString("MMddyy@A@+"), 7, 38);
             ss.SendText(lstAccount.Count + "@A@+", 8, 38);
@@ -195,7 +195,7 @@ namespace Script_Industrial_Auto_Write_Off
                 //date
                 ss.SendText(DateTime.Now.ToString("MMddyy") + "@A@+", 8, 40);
 
-                //tran code
+                //trans code
                 ss.SendText(accountrow.Tcode + "@A@+", 8, 48);
 
                 //comment
