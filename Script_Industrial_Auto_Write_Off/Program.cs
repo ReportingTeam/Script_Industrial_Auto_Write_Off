@@ -126,7 +126,7 @@ namespace Script_Industrial_Auto_Write_Off
                 return;
             }
 
-            //check for more than 997 accounts
+            //check for more than 997 accounts - 
             if (lstAccount.Count > 997)
             {
                 return;
