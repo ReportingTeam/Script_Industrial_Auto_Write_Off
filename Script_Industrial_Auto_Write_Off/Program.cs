@@ -112,10 +112,10 @@ namespace Script_Industrial_Auto_Write_Off
         static void ProcessFacility(FacilityRow facilityrow)
         {
             List<AccountRow> lstAccount = new List<AccountRow>();
+            List<string> lstNote = new List<string>();
             decimal decTotal;
             string strTotal;
             string strTemp = null;
-            int intCount;
 
             //get account list
             lstAccount = GetAccountList(facilityrow);
@@ -149,7 +149,7 @@ namespace Script_Industrial_Auto_Write_Off
             ss.SendText("@E");
 
             //get totals
-            decTotal = lstAccount.Select(x => x.Amount).Sum();
+            decTotal = lstAccount.Select(x => x.Balance).Sum();
             strTotal = Convert.ToInt32((Math.Abs(decTotal) * 100)).ToString();
 
             //enter summary data 
@@ -157,14 +157,7 @@ namespace Script_Industrial_Auto_Write_Off
             ss.SendText(DateTime.Now.ToString("MMddyy@A@+"), 7, 38);
             ss.SendText(lstAccount.Count + "@A@+", 8, 38);
             ss.SendText(strTotal, 9, 38);
-            if (decTotal > 0)
-            {
-                ss.SendText("@A@+");
-            }
-            else
-            {
-                ss.SendText("@A@-");
-            }
+            ss.SendText("@A@-");
             ss.SendText("A@E", 10, 38);
 
             //loop thru accounts
@@ -181,16 +174,9 @@ namespace Script_Industrial_Auto_Write_Off
                 ss.SendText("999@A@+", 8, 21);
 
                 //amount
-                strTemp = Convert.ToInt32((Math.Abs(accountrow.Amount) * 100)).ToString();
+                strTemp = Convert.ToInt32((Math.Abs(accountrow.Balance) * 100)).ToString();
                 ss.SendText(strTemp, 8, 26);
-                if (accountrow.Amount > 0)
-                {
-                    ss.SendText("@A@+");
-                }
-                else
-                {
-                    ss.SendText("@A@-");
-                }
+                ss.SendText("@A@-");
 
                 //date
                 ss.SendText(DateTime.Now.ToString("MMddyy") + "@A@+", 8, 40);
@@ -213,8 +199,8 @@ namespace Script_Industrial_Auto_Write_Off
                 ss.SendText("@E");
 
                 //log it
-                //WriteToLog("INFO", accountrow.Comment, facilityrow.FacilityNumber, accountrow.Account,
-                //   accountrow.Amount, accountrow.Ptype);
+                WriteToLog("INFO", "Adjustment.", facilityrow.FacilityNumber, accountrow.Account,
+                    -1 * accountrow.Balance);
 
             }
 
@@ -229,9 +215,16 @@ namespace Script_Industrial_Auto_Write_Off
             //log it
             WriteToLog("INFO", "Batch complete.", facilityrow.FacilityNumber, null, null);
 
-            //return
+            //return to command prompt
             ss.SendText("@3");
             ss.SendText("@3");
+
+            //post notes - loop thru accounts
+            lstNote.Add("Weekly auto adjustment submitted to bring balance to zero.");
+            foreach (AccountRow accountrow in lstAccount)
+            {
+                ss.PostNote(accountrow.Account, lstNote);
+            }
 
             //logoff facility
             ss.WaitForString("===>");
@@ -260,6 +253,7 @@ namespace Script_Industrial_Auto_Write_Off
                     "FACCONSTR_VS " +
                     "FROM COM_FACILITIES " +
                     "WHERE ENABLED=1 " +
+                    "AND CAST(FACNUMBER AS INT)=28 " +
                     "ORDER BY FACNAME";
                 daCom = new SqlDataAdapter(strSql, cnnCom);
                 daCom.Fill(dt = new System.Data.DataTable());
@@ -376,7 +370,7 @@ namespace Script_Industrial_Auto_Write_Off
                         "WHEN (SELECT COUNT(PATNO) FROM HOSPF" + strFacilityNumber + ".PATIENTS WHERE PATNO=T1.PATNO)>0 " +
                         "THEN (SELECT BALAN FROM HOSPF" + strFacilityNumber + ".PATIENTS WHERE PATNO=T1.PATNO) " +
                         "ELSE NULL " +
-                        "END<>0 " +
+                        "END>0 " +
 
                         "ORDER BY T1.PATNO";
                     daHms = new OdbcDataAdapter(strSql, cnnHms);
@@ -389,10 +383,118 @@ namespace Script_Industrial_Auto_Write_Off
                         lstAccount.Add(new AccountRow
                         {
                             Account = dr["PATNO"].ToString(),
-                            Amount = Convert.ToDecimal(dr["BALANCE"]),
+                            Balance = Convert.ToDecimal(dr["BALANCE"]),
                             Tcode = drMrn["TCODE"].ToString()
                         });
                     }
+
+                }
+
+                //loop thru plans          
+                strSql =
+                    "SELECT " +
+                    "FACILITYNUMBER, " +
+                    "INSURANCECOMPANY, " +
+                    "INSURANCEPLAN, " +
+                    "TCODE " +
+                    "FROM SCRIPT_INDUSTRIAL_AUTO_WRITE_OFF_PLAN " +
+                    "WHERE FACILITYNUMBER=" + facilityrow.FacilityNumber + " " +
+                    "ORDER BY INSURANCECOMPANY,INSURANCEPLAN";
+                daCom = new SqlDataAdapter(strSql, cnnCom);
+                daCom.Fill(dtPlan = new DataTable());
+                foreach (DataRow drPlan in dtPlan.Rows)
+                {
+                  
+                    //get connection string
+                    strSql =
+                        "SELECT " +
+                        "FACNUMBER, " +
+                        "FACCONSTR_VS " +
+                        "FROM COM_FACILITIES " +
+                        "WHERE CAST(FACNUMBER AS INT)='" + drPlan["FACILITYNUMBER"].ToString() + "'";
+                    daCom = new SqlDataAdapter(strSql, cnnCom);
+                    daCom.Fill(dt = new DataTable());
+                    strFacilityNumber = dt.Rows[0]["FACNUMBER"].ToString();
+                    strConnectionString = dt.Rows[0]["FACCONSTR_VS"].ToString();
+
+                    //connect to HMS
+                    cnnHms = CF.OpenOdbcConnectionWithRetry(strConnectionString, 10);
+
+                    //get accounts for that plan
+                    strSql =
+                        "SELECT " +
+
+                        "PATNO, " +
+
+                        "CASE " +
+                        "WHEN (SELECT ISBDWDT FROM HOSPF" + strFacilityNumber + ".ARMAST WHERE PATNO=T1.PATNO)<>'0001-01-01' " +
+                        "THEN (SELECT CURBD FROM HOSPF" + strFacilityNumber + ".ARMAST WHERE PATNO=T1.PATNO) " +
+                        "WHEN (SELECT ISDTFBL FROM HOSPF" + strFacilityNumber + ".ARMAST WHERE PATNO=T1.PATNO)<>'0001-01-01' " +
+                        "THEN (SELECT CURBL FROM HOSPF" + strFacilityNumber + ".ARMAST WHERE PATNO=T1.PATNO) " +
+                        "WHEN (SELECT COUNT(PATNO) FROM HOSPF" + strFacilityNumber + ".ARMAST WHERE PATNO=T1.PATNO)>0 " +
+                        "THEN (SELECT CURBL FROM HOSPF" + strFacilityNumber + ".ARMAST WHERE PATNO=T1.PATNO) " +
+                        "WHEN (SELECT COUNT(PATNO) FROM HOSPF" + strFacilityNumber + ".PATIENTS WHERE PATNO=T1.PATNO)>0 " +
+                        "THEN (SELECT BALAN FROM HOSPF" + strFacilityNumber + ".PATIENTS WHERE PATNO=T1.PATNO) " +
+                        "ELSE NULL " +
+                        "END AS BALANCE " +
+
+                        "FROM " +
+
+                        "( " +
+                        "SELECT PATNO " +
+                        "FROM HOSPF" + strFacilityNumber + ".PATIENTS " +
+                        "WHERE " +
+                        "(AINS1=" + drPlan["INSURANCECOMPANY"] + " AND " +
+                        "APLN1=" + drPlan["INSURANCEPLAN"] + ") OR " +
+                        "(AINS2=" + drPlan["INSURANCECOMPANY"] + " AND " +
+                        "APLN2=" + drPlan["INSURANCEPLAN"] + ") OR " +
+                        "(AINS3=" + drPlan["INSURANCECOMPANY"] + " AND " +
+                        "APLN3=" + drPlan["INSURANCEPLAN"] + ")" +
+                        "UNION " +
+                        "SELECT PATNO " +
+                        "FROM HOSPF" + strFacilityNumber + ".ARMAST " +
+                        "WHERE " +
+                        "(INS1=" + drPlan["INSURANCECOMPANY"] + " AND " +
+                        "IPL1=" + drPlan["INSURANCEPLAN"] + ") OR " +
+                        "(INS2=" + drPlan["INSURANCECOMPANY"] + " AND " +
+                        "IPL2=" + drPlan["INSURANCEPLAN"] + ") OR " +
+                        "(INS3=" + drPlan["INSURANCECOMPANY"] + " AND " +
+                        "IPL3=" + drPlan["INSURANCEPLAN"] + ")" +
+                        ") AS T1 " +
+
+                        "WHERE " +
+
+                        "CASE " +
+                        "WHEN (SELECT ISBDWDT FROM HOSPF" + strFacilityNumber + ".ARMAST WHERE PATNO=T1.PATNO)<>'0001-01-01' " +
+                        "THEN (SELECT CURBD FROM HOSPF" + strFacilityNumber + ".ARMAST WHERE PATNO=T1.PATNO) " +
+                        "WHEN (SELECT ISDTFBL FROM HOSPF" + strFacilityNumber + ".ARMAST WHERE PATNO=T1.PATNO)<>'0001-01-01' " +
+                        "THEN (SELECT CURBL FROM HOSPF" + strFacilityNumber + ".ARMAST WHERE PATNO=T1.PATNO) " +
+                        "WHEN (SELECT COUNT(PATNO) FROM HOSPF" + strFacilityNumber + ".ARMAST WHERE PATNO=T1.PATNO)>0 " +
+                        "THEN (SELECT CURBL FROM HOSPF" + strFacilityNumber + ".ARMAST WHERE PATNO=T1.PATNO) " +
+                        "WHEN (SELECT COUNT(PATNO) FROM HOSPF" + strFacilityNumber + ".PATIENTS WHERE PATNO=T1.PATNO)>0 " +
+                        "THEN (SELECT BALAN FROM HOSPF" + strFacilityNumber + ".PATIENTS WHERE PATNO=T1.PATNO) " +
+                        "ELSE NULL " +
+                        "END>0 " +
+
+                        "ORDER BY T1.PATNO";
+                    daHms = new OdbcDataAdapter(strSql, cnnHms);
+                    daHms.SelectCommand.CommandTimeout = 0;
+                    daHms.Fill(dt = new DataTable());
+
+                    //add to list
+                    foreach (DataRow dr in dt.Rows)
+                    {
+                        lstAccount.Add(new AccountRow
+                        {
+                            Account = dr["PATNO"].ToString(),
+                            Balance = Convert.ToDecimal(dr["BALANCE"]),
+                            Tcode = drPlan["TCODE"].ToString()
+                        });
+                    }
+
+                    //dispose connection
+                    if (cnnHms != null) cnnHms.Dispose();
+                    if (daHms != null) daHms.Dispose();
 
                 }
 
@@ -566,7 +668,7 @@ namespace Script_Industrial_Auto_Write_Off
     class AccountRow
     {
         public string Account { get; set; }
-        public decimal Amount { get; set; }
+        public decimal Balance { get; set; }
         public string Tcode { get; set; }
     }
 
