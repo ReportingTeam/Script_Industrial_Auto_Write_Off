@@ -6,6 +6,7 @@ using CommonFunctions;
 using System.Collections.Generic;
 using System.Threading;
 using System.Linq;
+using Excel = Microsoft.Office.Interop.Excel;
 
 namespace Script_Industrial_Auto_Write_Off
 {
@@ -19,6 +20,7 @@ namespace Script_Industrial_Auto_Write_Off
         {
             List<FacilityRow> lstFacility = new List<FacilityRow>();
             int intScriptingErrors = 0;
+            DateTime datScriptStart = DateTime.Now;
 
             try
             {
@@ -73,6 +75,9 @@ namespace Script_Industrial_Auto_Write_Off
 
                 }
 
+                //report
+                CreateReport(datScriptStart);
+
                 //log finish
                 WriteToLog("FINISH", "Script finished with " + intScriptingErrors + " errors", null, null, null);
 
@@ -118,7 +123,7 @@ namespace Script_Industrial_Auto_Write_Off
             string strTemp = null;
 
             //get account list
-            lstAccount = GetAccountList(facilityrow);
+            lstAccount = GetAccountList(facilityrow.FacilityNumber);
 
             //check for no accounts
             if (lstAccount.Count == 0)
@@ -149,7 +154,7 @@ namespace Script_Industrial_Auto_Write_Off
             ss.SendText("@E");
 
             //get totals
-            decTotal = lstAccount.Select(x => x.Balance).Sum();
+            decTotal = lstAccount.Where(x => x.Balance > 0).Select(x => x.Balance).Sum();
             strTotal = Convert.ToInt32((Math.Abs(decTotal) * 100)).ToString();
 
             //enter summary data 
@@ -161,7 +166,7 @@ namespace Script_Industrial_Auto_Write_Off
             ss.SendText("A@E", 10, 38);
 
             //loop thru accounts
-            foreach (AccountRow accountrow in lstAccount)
+            foreach (AccountRow accountrow in lstAccount.Where(x => x.Balance > 0)) 
             {
                 //account
                 ss.WaitForString("CASH RECEIPTS ENTRY");
@@ -174,7 +179,7 @@ namespace Script_Industrial_Auto_Write_Off
                 ss.SendText("999@A@+", 8, 21);
 
                 //amount
-                strTemp = Convert.ToInt32((Math.Abs(accountrow.Balance) * 100)).ToString();
+                strTemp = Convert.ToInt32((accountrow.Balance * 100)).ToString();
                 ss.SendText(strTemp, 8, 26);
                 ss.SendText("@A@-");
 
@@ -212,16 +217,13 @@ namespace Script_Industrial_Auto_Write_Off
             ss.WaitForString("TYPE BATCH CONTROL INFORMATION");
             ss.SendText("@2");
 
-            //log it
-            WriteToLog("INFO", "Batch complete.", facilityrow.FacilityNumber, null, null);
-
             //return to command prompt
             ss.SendText("@3");
             ss.SendText("@3");
 
             //post notes - loop thru accounts
             lstNote.Add("Weekly auto adjustment submitted to bring balance to zero.");
-            foreach (AccountRow accountrow in lstAccount)
+            foreach (AccountRow accountrow in lstAccount.Where(x => x.Balance > 0)) 
             {
                 ss.PostNote(accountrow.Account, lstNote);
             }
@@ -284,7 +286,7 @@ namespace Script_Industrial_Auto_Write_Off
         }
 
 
-        static List<AccountRow> GetAccountList(FacilityRow facilityrow)
+        static List<AccountRow> GetAccountList(string FacilityNumber)
         {
             SqlConnection cnnCom = null;
             SqlDataAdapter daCom = null;
@@ -310,7 +312,7 @@ namespace Script_Industrial_Auto_Write_Off
                     "MRN, " +
                     "TCODE " +
                     "FROM SCRIPT_INDUSTRIAL_AUTO_WRITE_OFF_MRN " +
-                    "WHERE FACILITYNUMBER=" + facilityrow.FacilityNumber + " " +
+                    "WHERE FACILITYNUMBER=" + FacilityNumber + " " +
                     "ORDER BY MRN";
                 daCom = new SqlDataAdapter(strSql, cnnCom);
                 daCom.Fill(dtMrn = new DataTable());
@@ -323,7 +325,7 @@ namespace Script_Industrial_Auto_Write_Off
                         "FACNUMBER, " +
                         "FACCONSTR_VS " +
                         "FROM COM_FACILITIES " +
-                        "WHERE CAST(FACNUMBER AS INT)='" + facilityrow.FacilityNumber + "'";
+                        "WHERE CAST(FACNUMBER AS INT)='" + FacilityNumber + "'";
                     daCom = new SqlDataAdapter(strSql, cnnCom);
                     daCom.Fill(dt = new DataTable());
                     strFacilityNumber = dt.Rows[0]["FACNUMBER"].ToString();
@@ -370,7 +372,15 @@ namespace Script_Industrial_Auto_Write_Off
                         "WHEN (SELECT COUNT(PATNO) FROM HOSPF" + strFacilityNumber + ".PATIENTS WHERE PATNO=T1.PATNO)>0 " +
                         "THEN (SELECT BALAN FROM HOSPF" + strFacilityNumber + ".PATIENTS WHERE PATNO=T1.PATNO) " +
                         "ELSE NULL " +
-                        "END>0 " +
+                        "END<>0 AND " +
+
+                        "CASE " +
+                        "WHEN (SELECT NWARFC1 FROM HOSPF" + strFacilityNumber + ".ARMAST WHERE PATNO=T1.PATNO) IS NOT NULL " +
+                        "THEN (SELECT NWARFC1 FROM HOSPF" + strFacilityNumber + ".ARMAST WHERE PATNO=T1.PATNO) " +
+                        "WHEN (SELECT NWFINCL FROM HOSPF" + strFacilityNumber + ".PATIENTS WHERE PATNO=T1.PATNO) IS NOT NULL " +
+                        "THEN (SELECT NWFINCL FROM HOSPF" + strFacilityNumber + ".PATIENTS WHERE PATNO=T1.PATNO) " +
+                        "ELSE NULL " +
+                        "END='I' " +
 
                         "ORDER BY T1.PATNO";
                     daHms = new OdbcDataAdapter(strSql, cnnHms);
@@ -398,7 +408,7 @@ namespace Script_Industrial_Auto_Write_Off
                     "INSURANCEPLAN, " +
                     "TCODE " +
                     "FROM SCRIPT_INDUSTRIAL_AUTO_WRITE_OFF_PLAN " +
-                    "WHERE FACILITYNUMBER=" + facilityrow.FacilityNumber + " " +
+                    "WHERE FACILITYNUMBER=" + FacilityNumber + " " +
                     "ORDER BY INSURANCECOMPANY,INSURANCEPLAN";
                 daCom = new SqlDataAdapter(strSql, cnnCom);
                 daCom.Fill(dtPlan = new DataTable());
@@ -453,13 +463,7 @@ namespace Script_Industrial_Auto_Write_Off
                         "UNION " +
                         "SELECT PATNO " +
                         "FROM HOSPF" + strFacilityNumber + ".ARMAST " +
-                        "WHERE " +
-                        "(INS1=" + drPlan["INSURANCECOMPANY"] + " AND " +
-                        "IPL1=" + drPlan["INSURANCEPLAN"] + ") OR " +
-                        "(INS2=" + drPlan["INSURANCECOMPANY"] + " AND " +
-                        "IPL2=" + drPlan["INSURANCEPLAN"] + ") OR " +
-                        "(INS3=" + drPlan["INSURANCECOMPANY"] + " AND " +
-                        "IPL3=" + drPlan["INSURANCEPLAN"] + ")" +
+                        "WHERE INS1=" + drPlan["INSURANCECOMPANY"] + " AND IPL1=" + drPlan["INSURANCEPLAN"] + " " + 
                         ") AS T1 " +
 
                         "WHERE " +
@@ -474,7 +478,15 @@ namespace Script_Industrial_Auto_Write_Off
                         "WHEN (SELECT COUNT(PATNO) FROM HOSPF" + strFacilityNumber + ".PATIENTS WHERE PATNO=T1.PATNO)>0 " +
                         "THEN (SELECT BALAN FROM HOSPF" + strFacilityNumber + ".PATIENTS WHERE PATNO=T1.PATNO) " +
                         "ELSE NULL " +
-                        "END>0 " +
+                        "END<>0 AND " +
+
+                        "CASE " +
+                        "WHEN (SELECT NWARFC1 FROM HOSPF" + strFacilityNumber + ".ARMAST WHERE PATNO=T1.PATNO) IS NOT NULL " +
+                        "THEN (SELECT NWARFC1 FROM HOSPF" + strFacilityNumber + ".ARMAST WHERE PATNO=T1.PATNO) " +
+                        "WHEN (SELECT NWFINCL FROM HOSPF" + strFacilityNumber + ".PATIENTS WHERE PATNO=T1.PATNO) IS NOT NULL " +
+                        "THEN (SELECT NWFINCL FROM HOSPF" + strFacilityNumber + ".PATIENTS WHERE PATNO=T1.PATNO) " +
+                        "ELSE NULL " +
+                        "END='I' " +
 
                         "ORDER BY T1.PATNO";
                     daHms = new OdbcDataAdapter(strSql, cnnHms);
@@ -538,7 +550,7 @@ namespace Script_Industrial_Auto_Write_Off
             //check data
             strSql =
                 "SELECT * " +
-                "FROM SCRIPT_INDUSTRIAL_ACCOUNTS " +
+                "FROM SCRIPT_INDUSTRIAL_AUTO_WRITE_OFF " +
                 "WHERE CAST(TIMESTAMP AS DATE)='" + DateTime.Now.Date + "' AND LOGTYPE='INFO'";
             daCom = new SqlDataAdapter(strSql, cnnCom);
             daCom.SelectCommand.CommandTimeout = 0;
@@ -563,7 +575,7 @@ namespace Script_Industrial_Auto_Write_Off
         }
 
 
-        public static void WriteToLog(string LogType, string Message, string FacilityNumber, string Account,
+        static void WriteToLog(string LogType, string Message, string FacilityNumber, string Account,
             decimal? Amount)
         {
             SqlConnection cnnSql = null;
@@ -577,7 +589,7 @@ namespace Script_Industrial_Auto_Write_Off
 
             //write to log
             strSql =
-                "INSERT INTO Script_Industrial_Accounts ( " +
+                "INSERT INTO Script_Industrial_Auto_Write_Off ( " +
                 "LogType, " +
                 "Message, " +
                 "TimeStamp, " +
@@ -654,6 +666,86 @@ namespace Script_Industrial_Auto_Write_Off
 
         }
 
+
+        static void CreateReport(DateTime ReportStart)
+        {
+            Excel.Application appExcel = null;
+            Excel.Workbook wb = null;
+            Excel.Worksheet ws = null;
+            SqlConnection cnnCom = null;
+            SqlDataAdapter daCom = null;
+            DataTable dt = null;
+            string strSql = null;
+            string strExcelReport = CF.Folder.WorkingArea + "\\Script_Industrial_Auto_Write_Off_" +
+                DateTime.Now.ToString("yyyy-MM-dd_HHmmss") + ".xlsx";
+
+            try
+            {
+                //open connection
+                cnnCom = new SqlConnection(CF.GetConnectionString(CF.DatabaseName.COMMON));
+                cnnCom.Open();
+
+                //open excel
+                appExcel = new Excel.Application();
+                Thread.Sleep(1000);
+                wb = appExcel.Workbooks.Add();
+                Thread.Sleep(1000);
+
+                //get negative worksheet
+                ws = wb.Worksheets.Add();
+                ws.Name = "Negative Accounts";
+
+                //copy to excel
+                CF.ListToExcel<AccountRow>(lstAccount.Where(x => x.Balance < 0).ToList(), ws, true, 1, 1);
+
+                //format
+                ws.Columns.AutoFit();
+
+                //get processed worksheet
+                ws = wb.Worksheets.Add();
+                ws.Name = "Processed Accounts";
+
+                //get processed
+                strSql =
+                    "SELECT " +
+                    "TIMESTAMP AS 'Time Stamp', " +
+                    "FACILITYNUMBER AS 'Facility Number', " +
+                    "ACCOUNT AS 'Account', " +
+                    "AMOUNT AS 'Adjustment' " +
+                    "FROM SCRIPT_INDUSTRIAL_AUTO_WRITE_OFF " +
+                    "WHERE " +
+                    "TIMESTAMP>'" + ReportStart.ToString() + "' AND " +
+                    "LOGTYPE='INFO' ";
+                daCom = new SqlDataAdapter(strSql, cnnCom);
+                daCom.Fill(dt = new System.Data.DataTable());
+
+                //copy to excel
+                CF.DataTableToExcel(dt, ws, true, 1, 1);
+
+                //format
+                ws.Columns.AutoFit();
+
+              
+                //save excel
+                wb.SaveAs(strExcelReport);
+
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.ToString());
+            }
+            finally
+            {
+                //dispose 
+                appExcel.Quit();
+                CF.KillApp(appExcel.Hwnd);
+                if (cnnCom != null) cnnCom.Dispose();
+                if (daCom != null) daCom.Dispose();
+                if (dt != null) dt.Dispose();
+            }
+
+        }
+
     }
 
     public class FacilityRow
@@ -673,5 +765,4 @@ namespace Script_Industrial_Auto_Write_Off
     }
 
 }
-
 
